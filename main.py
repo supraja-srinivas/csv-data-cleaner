@@ -47,9 +47,11 @@ if uploaded_file is not None:
     # =========================
     # 🧹 STEP 3: REMOVE NEWLINE CHARACTERS
     # =========================
-    df = df.applymap(
-        lambda x: re.sub(r'[\n\r]+', ' ', str(x)) if isinstance(x, str) else x
-    )
+
+    for col in df.select_dtypes(include='object').columns:
+        df[col] = df[col].astype(str).apply(
+            lambda x: re.sub(r'[\n\r]+', ' ', x)
+        )
 
     # =========================
     # 🔍 SPECIAL CHARACTER ANALYSIS (BEFORE CLEANING)
