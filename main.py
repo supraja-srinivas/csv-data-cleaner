@@ -3,206 +3,287 @@ import pandas as pd
 import re
 import csv
 import itertools
+import numpy as np
 
-st.title("CSV Data Cleaner & Data Quality Analyzer")
+st.set_page_config(page_title="Self Service Data Quality Platform", layout="wide")
 
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+st.title("Self Service Data Quality Platform")
 
-# =========================
-# 📌 RECOMMENDATIONS
-# =========================
-st.subheader("Recommendations for Input File")
-
-st.write("""
-❌ Avoid repeated special characters (e.g., !!!, ###)  
-❌ Avoid newline characters inside fields  
-❌ Avoid duplicate rows  
-❌ Avoid special characters in column names  
-❌ Avoid inconsistent data types  
-❌ Avoid null values in mandatory fields  
-
-✅ Use clean and standardized data before upload  
-""")
+uploaded_file = st.file_uploader(
+    "Upload your file",
+    type=["csv", "xlsx", "json", "xml"]
+)
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-
-    st.success("File uploaded successfully!")
 
     # =========================
-    # 🧹 STEP 1: CLEAN COLUMN NAMES
+    # FILE READ
     # =========================
-    df.columns = [
-        re.sub(r'[^A-Za-z0-9]+', '_', col).strip('_')
-        for col in df.columns
-    ]
+    file_type = uploaded_file.name.split('.')[-1].lower()
+
+    if file_type == "csv":
+        df = pd.read_csv(uploaded_file)
+    elif file_type in ["xlsx", "xls"]:
+        df = pd.read_excel(uploaded_file)
+    elif file_type == "json":
+        df = pd.read_json(uploaded_file)
+    elif file_type == "xml":
+        df = pd.read_xml(uploaded_file)
+    else:
+        st.error("Unsupported file type")
+        st.stop()
+
+    st.success(f"{file_type.upper()} file uploaded successfully!")
 
     # =========================
-    # 🧹 STEP 2: REMOVE FULLY NULL ROWS
+    # CLEAN COLUMN NAMES
+    # =========================
+    df.columns = [re.sub(r'[^A-Za-z0-9]+', '_', col).strip('_') for col in df.columns]
+
+    total_records = len(df)
+
+    # =========================
+    # BLANK VALUE CHECK
+    # =========================
+    st.subheader("Blank Value Analysis")
+
+    blank_issues = []
+
+    for col in df.columns:
+        for idx, val in df[col].items():
+            if pd.isna(val) or str(val).strip() == "":
+                blank_issues.append({
+                    "Row": idx + 1,
+                    "Column": col
+                })
+
+    if blank_issues:
+        st.warning(f"Blank values found: {len(blank_issues)}")
+        st.dataframe(pd.DataFrame(blank_issues))
+    else:
+        st.success("No blank values found!")
+
+    # =========================
+    # REMOVE FULL NULL ROWS
     # =========================
     before_null = len(df)
     df = df.dropna(how='all')
     after_null = len(df)
 
     # =========================
-    # 🧹 STEP 3: REMOVE NEWLINE CHARACTERS
+    # REMOVE NEWLINES
     # =========================
-
     for col in df.select_dtypes(include='object').columns:
-        df[col] = df[col].astype(str).apply(
-            lambda x: re.sub(r'[\n\r]+', ' ', x)
-        )
+        df[col] = df[col].astype(str).apply(lambda x: re.sub(r'[\n\r]+', ' ', x))
 
     # =========================
-    # 🔍 SPECIAL CHARACTER ANALYSIS (BEFORE CLEANING)
+    # SPECIAL CHAR DETECTION
     # =========================
-    st.subheader("Repeated Special Character Analysis (Before Cleaning)")
+    st.subheader("Repeated Special Character Analysis")
 
-    def count_repeated_special_chars(row):
-        total = 0
-        for val in row:
+    repeated_char_cleaned = False
+    issues = []
+
+    for idx, row in df.iterrows():
+        for col in df.columns:
+            val = row[col]
             if isinstance(val, str):
                 matches = re.findall(r'([^A-Za-z0-9\s])\1+', val)
-                total += len(matches)
-        return total
+                for match in matches:
+                    issues.append({"Row": idx + 1, "Column": col, "Character": match})
 
-    special_char_counts = df.apply(count_repeated_special_chars, axis=1)
-    problematic_rows = df[special_char_counts > 0]
+    if issues:
+        st.warning(f"Special character issues: {len(issues)}")
+        st.dataframe(pd.DataFrame(issues))
 
-    if not problematic_rows.empty:
-        row_numbers = sorted(set([int(i) + 1 for i in problematic_rows.index.tolist()]))
-        st.warning(f"Rows with repeated special characters: {len(problematic_rows)}")
-        st.write(f"Row numbers: {row_numbers}")
+        user_choice = st.radio("Remove repeated special characters?", ["No", "Yes"])
 
-        display_df = problematic_rows.copy()
-        display_df["Repeated_Special_Char_Count"] = special_char_counts[special_char_counts > 0]
-        st.dataframe(display_df)
+        if user_choice == "Yes":
+            for col in df.select_dtypes(include='object').columns:
+                df[col] = df[col].apply(lambda x: re.sub(r'([^A-Za-z0-9\s])\1+', '', x))
+            repeated_char_cleaned = True
+
     else:
-        st.success("No repeated special character issues found!")
+        st.success("No special character issues")
 
     # =========================
-    # 🧹 STEP 4: REMOVE REPEATED SPECIAL CHARACTERS
+    # DUPLICATE CHECK
     # =========================
-    def clean_repeated_special_chars(value):
-        if isinstance(value, str):
-            return re.sub(r'([^A-Za-z0-9\s])\1+', '', value)
-        return value
-
-    for col in df.select_dtypes(include='object').columns:
-        df[col] = df[col].apply(clean_repeated_special_chars)
-
-    # =========================
-    # 🔍 DUPLICATE CHECK AFTER CLEANING
-    # =========================
-    st.subheader("Duplicate Row Details")
-
     duplicate_rows = df[df.duplicated(keep=False)]
+    duplicate_count = len(duplicate_rows)
 
-    if not duplicate_rows.empty:
-        duplicate_indices = duplicate_rows.index.to_list()
-        row_numbers = sorted(set([int(i) + 1 for i in duplicate_indices]))
-
-        st.warning(f"Duplicate rows found: {duplicate_rows.shape[0]}")
-        st.write(f"Duplicate row numbers: {row_numbers}")
+    st.subheader("Duplicate Check")
+    if duplicate_count > 0:
+        st.warning(f"Duplicate rows: {duplicate_count}")
         st.dataframe(duplicate_rows)
     else:
-        st.success("No duplicate rows found!")
+        st.success("No duplicates")
 
-    # =========================
-    # 🧹 REMOVE DUPLICATES
-    # =========================
     before = len(df)
     df = df.drop_duplicates()
     after = len(df)
 
+    # ✅ FIX: Reset index so row numbers match UI
+    df = df.reset_index(drop=True)
+
     # =========================
-    # 🔍 PRIMARY KEY DETECTION
+    # OUTLIER DETECTION (IQR)
     # =========================
-    st.subheader("Primary Key Detection")
+    st.subheader("Outlier Detection")
 
-    potential_keys = []
+    outlier_rows = []
 
-    # Single column check
-    for col in df.columns:
-        if df[col].isnull().sum() == 0 and df[col].nunique() == len(df):
-            potential_keys.append((col,))
+    numeric_cols = df.select_dtypes(include=np.number).columns
 
-    # Combination check (2 columns max for performance)
-    cols = list(df.columns)
-    for combo in itertools.combinations(cols, 2):
-        subset = df[list(combo)]
-        if subset.isnull().sum().sum() == 0 and subset.drop_duplicates().shape[0] == len(df):
-            potential_keys.append(combo)
+    for col in numeric_cols:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
 
-    if potential_keys:
-        st.success("Possible Primary Keys Found:")
-        for key in potential_keys:
-            st.write(" + ".join(key))
+        lower = Q1 - 1.5 * IQR
+        upper = Q3 + 1.5 * IQR
+
+        for idx, val in df[col].items():
+            if pd.notna(val) and (val < lower or val > upper):
+                outlier_rows.append({
+                    "Row": idx + 1,
+                    "Column": col,
+                    "Value": val
+                })
+
+    if outlier_rows:
+        st.warning(f"Outliers found: {len(outlier_rows)}")
+        st.dataframe(pd.DataFrame(outlier_rows))
     else:
-        st.warning("No primary key found (even with combinations)")
+        st.success("No outliers detected")
 
     # =========================
-    # 📊 DATA SUMMARY
+    # DATA TYPE VALIDATION
     # =========================
-    st.subheader("Data Summary")
-    st.write(f"Total records after cleaning: {len(df)}")
+    st.subheader("Data Type Validation")
+
+    expected_types = {}
+
+    for col in df.columns:
+        expected_types[col] = st.selectbox(
+            col,
+            ["Auto Detect", "String", "Integer", "Float", "Date"],
+            key=col
+        )
+
+    validation_issues = []
+
+    for col in df.columns:
+        expected = expected_types[col]
+
+        if expected == "Auto Detect":
+            continue
+
+        for idx, val in df[col].items():
+            if pd.isna(val):
+                continue
+
+            try:
+                if expected == "Integer":
+                    int(val)
+                elif expected == "Float":
+                    float(val)
+                elif expected == "Date":
+                    pd.to_datetime(val)
+                elif expected == "String":
+                    str(val)
+            except:
+                validation_issues.append({
+                    "Row": idx + 1,
+                    "Column": col,
+                    "Value": val,
+                    "Expected": expected
+                })
+
+    if validation_issues:
+        st.warning(f"Data type issues: {len(validation_issues)}")
+        st.dataframe(pd.DataFrame(validation_issues))
+    else:
+        st.success("No data type issues")
 
     # =========================
-    # 🧹 CLEANING SUMMARY
+    # DATA QUALITY SCORE (SECTION-WISE)
     # =========================
-    st.subheader("Data Cleaning Activities Performed")
+    st.subheader("Data Quality Score Breakdown")
 
-    st.write("✔️ Column names cleaned")
-    st.write(f"✔️ Fully null rows removed: {before_null - after_null}")
-    st.write("✔️ Newline characters removed")
-    st.write("✔️ Repeated special characters removed")
-    st.write(f"✔️ Duplicate rows removed: {before - after}")
+    # Avoid division by zero
+    total_records = max(1, total_records)
 
-    # =========================
-    # 🧹 STEP 1: CLEAN COLUMN NAMES
-    # =========================
-    df.columns = [
-        re.sub(r'[^A-Za-z0-9]+', '_', col).strip('_')
-        for col in df.columns
-    ]
+    # Individual Scores
+    blank_score = max(0, 100 - (len(blank_issues) / total_records) * 100)
+    duplicate_score = max(0, 100 - (duplicate_count / total_records) * 100)
+    special_char_score = max(0, 100 - (len(issues) / total_records) * 100)
+    datatype_score = max(0, 100 - (len(validation_issues) / total_records) * 100)
+    outlier_score = max(0, 100 - (len(outlier_rows) / total_records) * 100)
 
-    # =========================
-    # 🧾 SHOW COLUMN NAMES + DATA TYPES
-    # =========================
-    st.subheader("Column Names & Data Types")
-    df = df.convert_dtypes()
+    # Round scores
+    blank_score = round(blank_score, 2)
+    duplicate_score = round(duplicate_score, 2)
+    special_char_score = round(special_char_score, 2)
+    datatype_score = round(datatype_score, 2)
+    outlier_score = round(outlier_score, 2)
 
-    column_info_df = pd.DataFrame({
-        "Column Name": df.columns,
-        "Data Type": df.dtypes.astype(str)
-    })
-
-    st.dataframe(column_info_df, use_container_width=True)
-
-    # =========================
-    # 📤 DOWNLOAD
-    # =========================
-    output_file_name = st.text_input(
-        "Enter output file name (without extension)",
-        value="processed_file"
+    # Total Score (average)
+    total_score = round(
+        (blank_score + duplicate_score + special_char_score + datatype_score + outlier_score) / 5,
+        2
     )
 
+    # =========================
+    # DISPLAY SCORES
+    # =========================
+    score_df = pd.DataFrame({
+        "Quality Check": [
+            "Blank Values",
+            "Duplicates",
+            "Special Characters",
+            "Data Type Issues",
+            "Outliers"
+        ],
+        "Score (0-100)": [
+            blank_score,
+            duplicate_score,
+            special_char_score,
+            datatype_score,
+            outlier_score
+        ]
+    })
+
+    st.dataframe(score_df, use_container_width=True)
+
+    # =========================
+    # FINAL SCORE
+    # =========================
+    st.subheader("Overall Data Quality Score")
+    st.metric("Score", f"{total_score} / 100")
+
+    # =========================
+    # SUMMARY
+    # =========================
+    st.subheader("Data Summary")
+    st.write(f"Total records: {len(df)}")
+
+    # =========================
+    # DOWNLOAD
+    # =========================
+    output_file_name = st.text_input("Enter output file name", "processed_file")
+
     if output_file_name:
-        csv_data = df.to_csv(
-            sep='|',
-            index=False,
-            quoting=csv.QUOTE_ALL
-        ).encode('utf-8')
+        csv_data = df.to_csv(sep='|', index=False, quoting=csv.QUOTE_ALL).encode('utf-8')
 
         st.download_button(
-            label="Download Processed CSV",
-            data=csv_data,
-            file_name=f"{output_file_name}.csv",
-            mime="text/csv"
+            "Download Processed CSV",
+            csv_data,
+            f"{output_file_name}.csv"
         )
 
     # =========================
-    # 👀 PREVIEW
+    # PREVIEW
     # =========================
     st.subheader("Preview")
     st.dataframe(df.head(50))
