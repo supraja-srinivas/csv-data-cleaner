@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import re
 import csv
-import itertools
 import numpy as np
 
 st.set_page_config(page_title="Self Service Data Quality Platform", layout="wide")
@@ -11,26 +10,47 @@ st.title("Self Service Data Quality Platform")
 
 uploaded_file = st.file_uploader(
     "Upload your file",
-    type=["csv", "xlsx", "json", "xml"]
+    type=["csv", "xlsx", "xls", "json", "xml"]
 )
 
 if uploaded_file is not None:
 
-    # =========================
-    # FILE READ
-    # =========================
-    file_type = uploaded_file.name.split('.')[-1].lower()
+    try:
+        # =========================
+        # FILE READ
+        # =========================
+        file_name = uploaded_file.name
+        file_type = file_name.split('.')[-1].lower()
 
-    if file_type == "csv":
-        df = pd.read_csv(uploaded_file)
-    elif file_type in ["xlsx", "xls"]:
-        df = pd.read_excel(uploaded_file)
-    elif file_type == "json":
-        df = pd.read_json(uploaded_file)
-    elif file_type == "xml":
-        df = pd.read_xml(uploaded_file)
-    else:
-        st.error("Unsupported file type")
+        st.write("Uploaded File:", file_name)
+
+        if file_type == "csv":
+            df = pd.read_csv(uploaded_file)
+
+        elif file_type == "xlsx":
+            df = pd.read_excel(
+                uploaded_file,
+                engine="openpyxl"
+            )
+
+        elif file_type == "xls":
+            df = pd.read_excel(
+                uploaded_file,
+                engine="xlrd"
+            )
+
+        elif file_type == "json":
+            df = pd.read_json(uploaded_file)
+
+        elif file_type == "xml":
+            df = pd.read_xml(uploaded_file)
+
+        else:
+            st.error("Unsupported file type")
+            st.stop()
+
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
         st.stop()
 
     st.success(f"{file_type.upper()} file uploaded successfully!")
@@ -38,7 +58,10 @@ if uploaded_file is not None:
     # =========================
     # CLEAN COLUMN NAMES
     # =========================
-    df.columns = [re.sub(r'[^A-Za-z0-9]+', '_', col).strip('_') for col in df.columns]
+    df.columns = [
+        re.sub(r'[^A-Za-z0-9]+', '_', str(col)).strip('_')
+        for col in df.columns
+    ]
 
     total_records = len(df)
 
@@ -51,10 +74,21 @@ if uploaded_file is not None:
 
     for col in df.columns:
         for idx, val in df[col].items():
-            if pd.isna(val) or str(val).strip() == "":
+
+            if pd.isna(val):
+
                 blank_issues.append({
                     "Row": idx + 1,
-                    "Column": col
+                    "Column": col,
+                    "Issue": "Null"
+                })
+
+            elif isinstance(val, str) and val.strip() == "":
+
+                blank_issues.append({
+                    "Row": idx + 1,
+                    "Column": col,
+                    "Issue": "Blank"
                 })
 
     if blank_issues:
@@ -67,67 +101,103 @@ if uploaded_file is not None:
     # REMOVE FULL NULL ROWS
     # =========================
     before_null = len(df)
-    df = df.dropna(how='all')
+    df = df.dropna(how="all")
     after_null = len(df)
 
     # =========================
     # REMOVE NEWLINES
     # =========================
-    for col in df.select_dtypes(include='object').columns:
-        df[col] = df[col].astype(str).apply(lambda x: re.sub(r'[\n\r]+', ' ', x))
+    object_cols = df.select_dtypes(include=["object"]).columns
+
+    for col in object_cols:
+        df[col] = df[col].astype(str).str.replace(
+            r'[\n\r]+',
+            ' ',
+            regex=True
+        )
 
     # =========================
-    # SPECIAL CHAR DETECTION
+    # SPECIAL CHARACTER CHECK
     # =========================
     st.subheader("Repeated Special Character Analysis")
 
-    repeated_char_cleaned = False
     issues = []
 
     for idx, row in df.iterrows():
+
         for col in df.columns:
-            val = row[col]
-            if isinstance(val, str):
-                matches = re.findall(r'([^A-Za-z0-9\s])\1+', val)
+
+            value = row[col]
+
+            if isinstance(value, str):
+
+                matches = re.findall(
+                    r'([^A-Za-z0-9\s])\1+',
+                    value
+                )
+
                 for match in matches:
-                    issues.append({"Row": idx + 1, "Column": col, "Character": match})
+                    issues.append({
+                        "Row": idx + 1,
+                        "Column": col,
+                        "Character": match
+                    })
 
     if issues:
-        st.warning(f"Special character issues: {len(issues)}")
+
+        st.warning(
+            f"Repeated special character issues found: {len(issues)}"
+        )
+
         st.dataframe(pd.DataFrame(issues))
 
-        user_choice = st.radio("Remove repeated special characters?", ["No", "Yes"])
+        clean_choice = st.radio(
+            "Remove repeated special characters?",
+            ["No", "Yes"]
+        )
 
-        if user_choice == "Yes":
-            for col in df.select_dtypes(include='object').columns:
-                df[col] = df[col].apply(lambda x: re.sub(r'([^A-Za-z0-9\s])\1+', '', x))
-            repeated_char_cleaned = True
+        if clean_choice == "Yes":
+
+            for col in object_cols:
+
+                df[col] = df[col].apply(
+                    lambda x: re.sub(
+                        r'([^A-Za-z0-9\s])\1+',
+                        '',
+                        str(x)
+                    )
+                )
+
+            st.success("Repeated special characters removed.")
 
     else:
-        st.success("No special character issues")
+        st.success("No repeated special character issues found.")
 
     # =========================
     # DUPLICATE CHECK
     # =========================
+    st.subheader("Duplicate Check")
+
     duplicate_rows = df[df.duplicated(keep=False)]
+
     duplicate_count = len(duplicate_rows)
 
-    st.subheader("Duplicate Check")
     if duplicate_count > 0:
-        st.warning(f"Duplicate rows: {duplicate_count}")
+        st.warning(f"Duplicate rows found: {duplicate_count}")
         st.dataframe(duplicate_rows)
     else:
-        st.success("No duplicates")
+        st.success("No duplicate rows found.")
 
-    before = len(df)
+    before_duplicates = len(df)
+
     df = df.drop_duplicates()
-    after = len(df)
 
-    # ✅ FIX: Reset index so row numbers match UI
+    after_duplicates = len(df)
+
     df = df.reset_index(drop=True)
 
     # =========================
-    # OUTLIER DETECTION (IQR)
+    # OUTLIER DETECTION
     # =========================
     st.subheader("Outlier Detection")
 
@@ -136,26 +206,37 @@ if uploaded_file is not None:
     numeric_cols = df.select_dtypes(include=np.number).columns
 
     for col in numeric_cols:
+
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
+
         IQR = Q3 - Q1
 
-        lower = Q1 - 1.5 * IQR
-        upper = Q3 + 1.5 * IQR
+        lower_bound = Q1 - (1.5 * IQR)
+        upper_bound = Q3 + (1.5 * IQR)
 
-        for idx, val in df[col].items():
-            if pd.notna(val) and (val < lower or val > upper):
-                outlier_rows.append({
-                    "Row": idx + 1,
-                    "Column": col,
-                    "Value": val
-                })
+        for idx, value in df[col].items():
+
+            if pd.notna(value):
+
+                if value < lower_bound or value > upper_bound:
+
+                    outlier_rows.append({
+                        "Row": idx + 1,
+                        "Column": col,
+                        "Value": value
+                    })
 
     if outlier_rows:
-        st.warning(f"Outliers found: {len(outlier_rows)}")
+
+        st.warning(
+            f"Outliers detected: {len(outlier_rows)}"
+        )
+
         st.dataframe(pd.DataFrame(outlier_rows))
+
     else:
-        st.success("No outliers detected")
+        st.success("No outliers detected.")
 
     # =========================
     # DATA TYPE VALIDATION
@@ -165,78 +246,110 @@ if uploaded_file is not None:
     expected_types = {}
 
     for col in df.columns:
+
         expected_types[col] = st.selectbox(
-            col,
-            ["Auto Detect", "String", "Integer", "Float", "Date"],
+            f"{col}",
+            [
+                "Auto Detect",
+                "String",
+                "Integer",
+                "Float",
+                "Date"
+            ],
             key=col
         )
 
     validation_issues = []
 
     for col in df.columns:
+
         expected = expected_types[col]
 
         if expected == "Auto Detect":
             continue
 
-        for idx, val in df[col].items():
-            if pd.isna(val):
+        for idx, value in df[col].items():
+
+            if pd.isna(value):
                 continue
 
             try:
+
                 if expected == "Integer":
-                    int(val)
+                    int(value)
+
                 elif expected == "Float":
-                    float(val)
+                    float(value)
+
                 elif expected == "Date":
-                    pd.to_datetime(val)
+                    pd.to_datetime(value)
+
                 elif expected == "String":
-                    str(val)
-            except:
+                    str(value)
+
+            except Exception:
+
                 validation_issues.append({
                     "Row": idx + 1,
                     "Column": col,
-                    "Value": val,
-                    "Expected": expected
+                    "Value": value,
+                    "Expected Type": expected
                 })
 
     if validation_issues:
-        st.warning(f"Data type issues: {len(validation_issues)}")
+
+        st.warning(
+            f"Data type validation issues: {len(validation_issues)}"
+        )
+
         st.dataframe(pd.DataFrame(validation_issues))
+
     else:
-        st.success("No data type issues")
+        st.success("No data type validation issues found.")
 
     # =========================
-    # DATA QUALITY SCORE (SECTION-WISE)
+    # DATA QUALITY SCORES
     # =========================
     st.subheader("Data Quality Score Breakdown")
 
-    # Avoid division by zero
-    total_records = max(1, total_records)
+    total_records = max(total_records, 1)
 
-    # Individual Scores
-    blank_score = max(0, 100 - (len(blank_issues) / total_records) * 100)
-    duplicate_score = max(0, 100 - (duplicate_count / total_records) * 100)
-    special_char_score = max(0, 100 - (len(issues) / total_records) * 100)
-    datatype_score = max(0, 100 - (len(validation_issues) / total_records) * 100)
-    outlier_score = max(0, 100 - (len(outlier_rows) / total_records) * 100)
-
-    # Round scores
-    blank_score = round(blank_score, 2)
-    duplicate_score = round(duplicate_score, 2)
-    special_char_score = round(special_char_score, 2)
-    datatype_score = round(datatype_score, 2)
-    outlier_score = round(outlier_score, 2)
-
-    # Total Score (average)
-    total_score = round(
-        (blank_score + duplicate_score + special_char_score + datatype_score + outlier_score) / 5,
+    blank_score = round(
+        max(0, 100 - (len(blank_issues) / total_records * 100)),
         2
     )
 
-    # =========================
-    # DISPLAY SCORES
-    # =========================
+    duplicate_score = round(
+        max(0, 100 - (duplicate_count / total_records * 100)),
+        2
+    )
+
+    special_score = round(
+        max(0, 100 - (len(issues) / total_records * 100)),
+        2
+    )
+
+    datatype_score = round(
+        max(0, 100 - (len(validation_issues) / total_records * 100)),
+        2
+    )
+
+    outlier_score = round(
+        max(0, 100 - (len(outlier_rows) / total_records * 100)),
+        2
+    )
+
+    overall_score = round(
+        (
+            blank_score +
+            duplicate_score +
+            special_score +
+            datatype_score +
+            outlier_score
+        ) / 5,
+        2
+    )
+
     score_df = pd.DataFrame({
         "Quality Check": [
             "Blank Values",
@@ -245,10 +358,10 @@ if uploaded_file is not None:
             "Data Type Issues",
             "Outliers"
         ],
-        "Score (0-100)": [
+        "Score": [
             blank_score,
             duplicate_score,
-            special_char_score,
+            special_score,
             datatype_score,
             outlier_score
         ]
@@ -257,33 +370,52 @@ if uploaded_file is not None:
     st.dataframe(score_df, use_container_width=True)
 
     # =========================
-    # FINAL SCORE
+    # OVERALL SCORE
     # =========================
     st.subheader("Overall Data Quality Score")
-    st.metric("Score", f"{total_score} / 100")
+
+    st.metric(
+        label="Quality Score",
+        value=f"{overall_score}/100"
+    )
 
     # =========================
     # SUMMARY
     # =========================
     st.subheader("Data Summary")
-    st.write(f"Total records: {len(df)}")
+
+    st.write(f"Total Records: {len(df)}")
+    st.write(f"Columns: {len(df.columns)}")
 
     # =========================
     # DOWNLOAD
     # =========================
-    output_file_name = st.text_input("Enter output file name", "processed_file")
+    st.subheader("Download Processed File")
 
-    if output_file_name:
-        csv_data = df.to_csv(sep='|', index=False, quoting=csv.QUOTE_ALL).encode('utf-8')
+    output_name = st.text_input(
+        "Output File Name",
+        "processed_file"
+    )
 
-        st.download_button(
-            "Download Processed CSV",
-            csv_data,
-            f"{output_file_name}.csv"
-        )
+    csv_output = df.to_csv(
+        sep="|",
+        index=False,
+        quoting=csv.QUOTE_ALL
+    ).encode("utf-8")
+
+    st.download_button(
+        label="Download CSV",
+        data=csv_output,
+        file_name=f"{output_name}.csv",
+        mime="text/csv"
+    )
 
     # =========================
     # PREVIEW
     # =========================
     st.subheader("Preview")
-    st.dataframe(df.head(50))
+
+    st.dataframe(
+        df.head(50),
+        use_container_width=True
+    )
